@@ -10,3 +10,13 @@ sqlalchemy
 requests
 urllib3
 utils
+# 深度学习依赖
+torch
+torchvision
+torchaudio
+# 图神经网络依赖
+torch_geometric
+# 数据处理依赖
+pandas
+numpy
+scikit-learn

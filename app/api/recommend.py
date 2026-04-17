@@ -2,9 +2,11 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.database import get_db
 from app.schemas.schemas import RecommendationResponse, RecommendationItem, SpotDetail, CityRecommendationResponse, CityRecommendationItem, AITripRequest, AITripResponse
-from app.services.neo4j_service import get_all_spots_from_db, get_user_footprints_from_mysql, recommend_by_footprint, extract_field, driver
+from app.services.neo4j_service import get_all_spots_from_db, get_user_footprints_from_mysql, recommend_by_footprint, recommend_by_lightgcn, extract_field, driver
 from app.services.amap_service import get_city_weather
 from app.services.ai_service import ai_trip_generator
+from app.services.explanation_service import explanation_generator
+from app.services.hybrid_recommender import hybrid_recommender
 
 router = APIRouter(prefix="/recommend", tags=["推荐"])
 
@@ -281,3 +283,86 @@ async def generate_ai_itinerary(
         )
     except Exception as ext:
         raise HTTPException(status_code=500, detail=f"生成行程失败：{str(ext)[:50]}")
+
+# 基于LightGCN的推荐
+@router.get("/lightgcn", response_model=RecommendationResponse)
+async def get_lightgcn_recommendations(
+        user_id: int = Query(..., ge=1, description="用户ID"),
+        limit: int = Query(10, ge=1, le=50, description="推荐数量（1-50）"),
+        db: Session = Depends(get_db)
+):
+    all_spots = get_all_spots_from_db()
+    user_footprints = get_user_footprints_from_mysql(db)
+    if not all_spots:
+        raise HTTPException(status_code=404, detail="Neo4j中无有效景点数据")
+    if user_id not in user_footprints:
+        raise HTTPException(status_code=404, detail="该用户暂无足迹数据，请先添加足迹")
+    try:
+        raw_recs = recommend_by_lightgcn(user_id, user_footprints, all_spots, top_k=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LightGCN推荐算法执行失败: {str(e)}")
+    if not raw_recs:
+        raise HTTPException(status_code=404, detail="未找到推荐结果")
+    # 生成推荐解释
+    recommended_spot_ids = [rec["spot_id"] for rec in raw_recs]
+    explanations = explanation_generator.generate_batch_explanations(
+        user_id, recommended_spot_ids, user_footprints, all_spots
+    )
+    
+    recommendations = [
+        RecommendationItem(
+            spot_id=rec["spot_id"],
+            name=rec["name"],
+            city=rec["city"],
+            rating=round(rec["rating"], 2),
+            reason=explanations[i],
+            weather=get_city_weather(rec["city"])
+        )
+        for i, rec in enumerate(raw_recs)
+    ]
+    return RecommendationResponse(
+        target=f"用户{user_id}",
+        count=len(recommendations),
+        recommendations=recommendations
+    )
+
+@router.get("/hybrid", response_model=RecommendationResponse)
+async def get_hybrid_recommendations(
+        user_id: int = Query(..., ge=1, description="用户ID"),
+        limit: int = Query(10, ge=1, le=50, description="推荐数量（1-50）"),
+        cf_weight: float = Query(0.5, ge=0.0, le=1.0, description="协同过滤权重（0.0-1.0）"),
+        content_weight: float = Query(0.5, ge=0.0, le=1.0, description="基于内容推荐权重（0.0-1.0）"),
+        db: Session = Depends(get_db)
+):
+    all_spots = get_all_spots_from_db()
+    user_footprints = get_user_footprints_from_mysql(db)
+    if not all_spots:
+        raise HTTPException(status_code=404, detail="Neo4j中无有效景点数据")
+    if user_id not in user_footprints:
+        raise HTTPException(status_code=404, detail="该用户暂无足迹数据，请先添加足迹")
+    try:
+        raw_recs = hybrid_recommender.recommend_by_hybrid(
+            user_id, user_footprints, all_spots, top_k=limit,
+            cf_weight=cf_weight, content_weight=content_weight
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"混合推荐算法执行失败: {str(e)}")
+    if not raw_recs:
+        raise HTTPException(status_code=404, detail="未找到推荐结果")
+    
+    recommendations = [
+        RecommendationItem(
+            spot_id=rec["spot_id"],
+            name=rec["name"],
+            city=rec["city"],
+            rating=round(rec["rating"], 2),
+            reason=rec.get("reason", "综合推荐"),
+            weather=get_city_weather(rec["city"])
+        )
+        for rec in raw_recs
+    ]
+    return RecommendationResponse(
+        target=f"用户{user_id}",
+        count=len(recommendations),
+        recommendations=recommendations
+    )

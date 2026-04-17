@@ -108,6 +108,56 @@ def recommend_by_footprint(target_user, footprints, all_spots, top_k=10):
     candidate_with_rating.sort(key=lambda x: x["rating"], reverse=True)
     return candidate_with_rating[:top_k]
 
+def recommend_by_lightgcn(target_user, footprints, all_spots, top_k=10):
+    """基于LightGCN推荐景点"""
+    from app.services.data_service import data_processor
+    from app.services.model_service import model_trainer
+    import torch
+    
+    # 处理用户足迹数据
+    edge_index = data_processor.process_user_footprints(footprints)
+    item_features = data_processor.get_item_features()
+    
+    # 初始化模型
+    num_users = data_processor.get_num_users()
+    num_items = data_processor.get_num_items()
+    
+    if num_users == 0 or num_items == 0:
+        return []
+    
+    model_trainer.init_model(num_users, num_items)
+    model_trainer.model.set_edge_index(edge_index)
+    
+    # 训练模型
+    model_trainer.train(edge_index, item_features, epochs=20)
+    
+    # 获取用户索引
+    user_idx = data_processor.user_id_to_idx(target_user)
+    if user_idx == -1:
+        return []
+    
+    # 获取用户已交互的物品
+    target_spots = set(footprints.get(target_user, {}).keys())
+    exclude_items = [data_processor.spot_id_to_idx(spot_id) for spot_id in target_spots]
+    exclude_items = [idx for idx in exclude_items if idx != -1]
+    
+    # 获取推荐
+    recommendations = model_trainer.model.recommend(user_idx, top_k, exclude_items, item_features)
+    
+    # 转换为推荐结果
+    result = []
+    for idx in recommendations:
+        spot_id = data_processor.idx_to_spot_id(idx)
+        if spot_id in all_spots:
+            result.append({
+                "spot_id": spot_id,
+                "name": all_spots[spot_id]["name"],
+                "rating": all_spots[spot_id]["rating"],
+                "city": all_spots[spot_id]["city"]
+            })
+    
+    return result
+
 def extract_field(raw_value, target_type, default=None):
     """提取字段值并进行类型转换"""
     if isinstance(raw_value, tuple):
