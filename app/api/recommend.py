@@ -33,7 +33,8 @@ async def get_recommendations(
     with driver.session() as session:
         rec_result = session.run(
             """
-            MATCH (target:ScenicSpot {name: $name})
+            MATCH (target:ScenicSpot)
+            WHERE target.name CONTAINS $name
             OPTIONAL MATCH (target)-[:IN_SAME_CITY_AS]-(c:ScenicSpot)
             OPTIONAL MATCH (target)-[:SAME_CATEGORY_AS]-(t:ScenicSpot)
             WITH target,
@@ -170,7 +171,8 @@ async def get_default_recommendations(
     with driver.session() as session:
         rec_result = session.run(
             """
-            MATCH (target:ScenicSpot {spot_id: $spot_id})
+            MATCH (target:ScenicSpot)
+            WHERE toString(target.spot_id) = toString($spot_id)
             OPTIONAL MATCH (target)-[:IN_SAME_CITY_AS]-(c:ScenicSpot)
             OPTIONAL MATCH (target)-[:SAME_CATEGORY_AS]-(t:ScenicSpot)
             WITH target,
