@@ -23,9 +23,13 @@ AMAP_WEATHER_URL = os.getenv("AMAP_WEATHER_URL", "https://restapi.amap.com/v3/we
 QWEN_API_KEY = os.getenv("QWEN_API_KEY")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-turbo")
 
+RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+RAG_EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "512"))
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "30"))
+
 # 应用配置
 APP_NAME = "智能旅游景点推荐系统"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 # CORS配置
 CORS_ORIGINS = [

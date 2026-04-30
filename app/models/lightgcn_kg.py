@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv
 from app.services.knowledge_graph_service import feature_extractor
 
 class LightGCNWithKG(nn.Module):
@@ -11,59 +10,66 @@ class LightGCNWithKG(nn.Module):
         self.embedding_dim = embedding_dim
         self.num_layers = num_layers
         
-        # 初始化用户和物品嵌入
         self.user_embedding = nn.Embedding(num_users, embedding_dim)
         self.item_embedding = nn.Embedding(num_items, embedding_dim)
         nn.init.normal_(self.user_embedding.weight, std=0.1)
         nn.init.normal_(self.item_embedding.weight, std=0.1)
         
-        # 知识图谱特征维度
         self.kg_feature_dim = feature_extractor.get_feature_dim()
         
-        # 特征融合层
-        self.feature_fusion = nn.Linear(self.kg_feature_dim, embedding_dim)
-        nn.init.normal_(self.feature_fusion.weight, std=0.1)
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(self.kg_feature_dim, embedding_dim),
+            nn.LayerNorm(embedding_dim),
+            nn.Dropout(0.1)
+        )
         
-        # 定义图卷积层
-        self.convs = nn.ModuleList()
-        for _ in range(num_layers):
-            self.convs.append(GCNConv(embedding_dim, embedding_dim, add_self_loops=False))
+        self.gate_linear = nn.Linear(embedding_dim, embedding_dim)
+        
+        self.alpha = nn.Parameter(torch.tensor(0.5))
     
     def forward(self, edge_index, item_features=None):
-        # 获取初始嵌入
         user_emb = self.user_embedding.weight
         item_emb = self.item_embedding.weight
         
-        # 融合知识图谱特征
         if item_features is not None:
             kg_emb = self.feature_fusion(item_features)
-            item_emb = item_emb + kg_emb
+            gate = torch.sigmoid(self.gate_linear(kg_emb))
+            item_emb = item_emb + gate * kg_emb
         
-        # 合并用户和物品嵌入
         x = torch.cat([user_emb, item_emb], dim=0)
         
-        # 保存每一层的嵌入
+        num_nodes = self.num_users + self.num_items
+        
+        row = edge_index[0]
+        col = edge_index[1]
+        
+        deg = torch.zeros(num_nodes, dtype=torch.float32, device=edge_index.device)
+        deg.scatter_add_(0, row, torch.ones(row.shape[0], dtype=torch.float32, device=edge_index.device))
+        deg_inv_sqrt = torch.pow(deg, -0.5)
+        deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
+        
+        norm = deg_inv_sqrt[row] * deg_inv_sqrt[col]
+        
         emb_list = [x]
         
-        # 多层图卷积
-        for conv in self.convs:
-            x = conv(x, edge_index)
+        for _ in range(self.num_layers):
+            norm_msg = norm.unsqueeze(1) * x[row]
+            x_new = torch.zeros_like(x)
+            x_new.index_add_(0, col, norm_msg)
+            x = x_new
             emb_list.append(x)
         
-        # 取所有层嵌入的平均值
-        output = torch.stack(emb_list, dim=0).mean(dim=0)
+        alpha = torch.sigmoid(self.alpha)
+        output = (1 - alpha) * emb_list[0] + alpha * torch.stack(emb_list[1:], dim=0).mean(dim=0)
         
-        # 分离用户和物品嵌入
         user_emb = output[:self.num_users]
         item_emb = output[self.num_users:]
         
         return user_emb, item_emb
     
     def predict(self, user_ids, item_ids, item_features=None):
-        # 获取用户和物品嵌入
         user_emb, item_emb = self.forward(self.edge_index, item_features)
         
-        # 计算用户和物品的内积作为预测分数
         user_emb = user_emb[user_ids]
         item_emb = item_emb[item_ids]
         scores = (user_emb * item_emb).sum(dim=1)
@@ -71,24 +77,18 @@ class LightGCNWithKG(nn.Module):
         return scores
     
     def recommend(self, user_id, top_k=10, exclude_items=None, item_features=None):
-        # 获取用户和物品嵌入
         user_emb, item_emb = self.forward(self.edge_index, item_features)
         
-        # 获取目标用户的嵌入
         user_emb = user_emb[user_id].unsqueeze(0)
         
-        # 计算用户与所有物品的相似度
         scores = torch.matmul(user_emb, item_emb.t()).squeeze()
         
-        # 排除已交互的物品
         if exclude_items is not None:
             scores[exclude_items] = -float('inf')
         
-        # 获取Top-K推荐
         _, top_indices = torch.topk(scores, top_k)
         
         return top_indices.cpu().numpy().tolist()
     
     def set_edge_index(self, edge_index):
-        # 设置图的边索引
         self.edge_index = edge_index

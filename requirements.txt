@@ -20,3 +20,6 @@ torch_geometric
 pandas
 numpy
 scikit-learn
+# RAG系统依赖
+faiss-cpu
+sentence-transformers

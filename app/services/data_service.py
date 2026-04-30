@@ -90,6 +90,23 @@ class DataProcessor:
         """将索引转换为用户ID"""
         return self.index_to_user_id.get(idx, -1)
     
+    def filter_spots_by_footprints(self, footprints):
+        active_spot_ids = set()
+        for user_spots in footprints.values():
+            active_spot_ids.update(user_spots.keys())
+
+        new_spot_id_to_index = {}
+        new_index_to_spot_id = {}
+        for i, spot_id in enumerate(sorted(active_spot_ids)):
+            if spot_id in self.spot_id_to_index:
+                new_spot_id_to_index[spot_id] = i
+                new_index_to_spot_id[i] = spot_id
+
+        self.spot_id_to_index = new_spot_id_to_index
+        self.index_to_spot_id = new_index_to_spot_id
+        self.user_id_to_index = {}
+        self.index_to_user_id = {}
+
     def generate_train_data(self, footprints):
         """生成训练数据"""
         # 处理用户足迹，构建边索引

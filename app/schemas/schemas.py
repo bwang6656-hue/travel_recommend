@@ -112,6 +112,27 @@ class AITripResponse(BaseModel):
     days: int = Field(..., description="行程天数")
     preference: Optional[str] = Field(None, description="游玩偏好")
 
+class NaturalLanguageTripRequest(BaseModel):
+    query: str = Field(..., min_length=2, description="自然语言行程需求，如'我想去北京玩3天，喜欢历史文化'")
+
+class RelatedSpotItem(BaseModel):
+    spot_id: int
+    name: str
+    city: str
+    rating: float
+    price: Optional[float] = None
+    best_season: Optional[str] = None
+    recommended_duration: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class NaturalLanguageTripResponse(BaseModel):
+    query: str = Field(..., description="用户原始查询")
+    itinerary: str = Field(..., description="AI生成的行程方案")
+    related_spots: List[RelatedSpotItem] = Field(default_factory=list, description="检索到的相关景点")
+    days: int = Field(..., description="行程天数")
+    city: Optional[str] = Field(None, description="识别出的城市")
+    preference: Optional[str] = Field(None, description="识别出的偏好")
+
 # 通用响应模型
 class DeleteSuccessResponse(BaseModel):
     status: str

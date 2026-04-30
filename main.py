@@ -5,32 +5,34 @@ from app.config.config import APP_NAME, APP_VERSION, CORS_ORIGINS
 from app.api import api_router
 from app.services.neo4j_service import get_all_spots_from_db, driver, close_neo4j_driver
 from app.services.amap_service import close_amap_session
+from app.services.vector_store_service import vector_store_service
 from app.models.database import SessionLocal
 from sqlalchemy import text
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动逻辑：验证数据库连接+初始化缓存
     try:
-        # 验证 Neo4j 连接
         driver.verify_connectivity()
-        # 验证 MySQL 连接
         db = SessionLocal()
         db.execute(text("SELECT 1"))
         db.close()
-        # 预加载缓存
         get_all_spots_from_db()
-        print("✅ Neo4j + MySQL 连接成功，缓存初始化完成")
+        print("[OK] Neo4j + MySQL 连接成功，缓存初始化完成")
     except Exception as e:
         raise RuntimeError(f"启动失败：{e}")
 
-    yield  # 服务运行中
+    try:
+        print("[RAG] 初始化向量存储服务...")
+        vector_store_service.build_index()
+        print("[OK] RAG向量索引初始化完成")
+    except Exception as e:
+        print(f"[WARN] RAG初始化失败（自然语言行程功能不可用）：{e}")
 
-    # 关闭逻辑
+    yield
+
     close_neo4j_driver()
-    # 关闭高德接口会话
     close_amap_session()
-    print("🔌 数据库连接已关闭")
+    print("[OK] 数据库连接已关闭")
 
 # === FastAPI 基础配置（绑定lifespan） ===
 app = FastAPI(
