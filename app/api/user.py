@@ -1,73 +1,19 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.database import get_db
-from app.models.models import DBUser, DBFootprint
-from app.schemas.schemas import UserInfoResponse, UserUpdateRequest, FootprintRequest, FootprintResponse, FootprintListResponse, DeleteSuccessResponse
+from app.models.models import DBUser, DBFootprint, DBFavorite, DBNotification
+from app.schemas.schemas import (
+    UserInfoResponse, UserUpdateRequest, FootprintRequest, FootprintResponse,
+    FootprintListResponse, DeleteSuccessResponse, FavoriteRequest, FavoriteItem,
+    FavoriteListResponse, NotificationItem, NotificationListResponse,
+)
 from app.services.auth_service import get_password_hash
 from app.services.neo4j_service import get_all_spots_from_db, clear_footprint_cache
 from datetime import datetime
 
 router = APIRouter(prefix="/user", tags=["用户"])
 
-# 获取用户信息
-@router.get("/{user_id}", response_model=UserInfoResponse, summary="获取用户信息")
-def get_user_info(
-        user_id: int,  # Path(..., ge=1, description="用户ID（users表的id）"),
-        db: Session = Depends(get_db)
-):
-    try:
-        # 根据ID查找用户
-        user = db.query(DBUser).filter(DBUser.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="用户不存在")
 
-        # 返回用户信息
-        return UserInfoResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"获取用户信息报错：{str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取用户信息失败：{str(e)}")
-
-# 修改用户信息
-@router.put("/{user_id}", response_model=UserInfoResponse, summary="修改用户信息")
-def update_user_info(
-        user_id: int,  # Path(..., ge=1, description="用户ID（users表的id）"),
-        update_data: UserUpdateRequest = Body(...),
-        db: Session = Depends(get_db)
-):
-    try:
-        # 根据ID查找用户
-        user = db.query(DBUser).filter(DBUser.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="用户不存在")
-
-        # 更新字段
-        if update_data.email is not None:
-            user.email = update_data.email
-        if update_data.password is not None:
-            user.password = get_password_hash(update_data.password)
-
-        db.commit()
-        db.refresh(user)
-
-        return UserInfoResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        print(f"修改用户信息报错：{str(e)}")
-        raise HTTPException(status_code=500, detail=f"修改用户信息失败：{str(e)}")
-
-# 添加用户足迹
 @router.post("/footprints", response_model=FootprintResponse)
 def add_user_footprint(
         footprint_data: FootprintRequest = Body(..., description="用户足迹"),
@@ -81,7 +27,6 @@ def add_user_footprint(
         if footprint_data.spot_id not in all_spots:
             raise HTTPException(status_code=404, detail=f"景点ID {footprint_data.spot_id} 不存在")
 
-        #避免重复添加
         existing_footprint = db.query(DBFootprint).filter(
             DBFootprint.user_id == footprint_data.user_id,
             DBFootprint.spot_id == footprint_data.spot_id
@@ -98,7 +43,6 @@ def add_user_footprint(
         db.commit()
         db.refresh(new_footprint)
 
-        # 清除缓存
         clear_footprint_cache()
         return new_footprint
     except HTTPException:
@@ -108,39 +52,36 @@ def add_user_footprint(
         print(f"添加足迹失败：{str(e)}")
         raise HTTPException(status_code=500, detail=f"添加足迹失败:{str(e)}")
 
-# 获取用户足迹
+
 @router.get("/footprints", response_model=FootprintListResponse)
 def get_user_footprints(
         user_id: int = Query(..., ge=1, description="用户ID "),
         db: Session = Depends(get_db)
 ):
     try:
-        #查询该用户所有足迹（按时间访问倒序）
         footprints_orm = db.query(DBFootprint).filter(DBFootprint.user_id == user_id).order_by(
             DBFootprint.visit_time.desc()).all()
         footprints = [FootprintResponse.model_validate(fp) for fp in footprints_orm]
         return FootprintListResponse(
             user_id=user_id,
             count=len(footprints),
-            footprints= footprints
+            footprints=footprints
         )
     except Exception as e:
         print(f"获取足迹失败{str(e)}")
         raise HTTPException(status_code=500, detail=f"获取足迹失败{str(e)}")
 
-# 删除用户足迹
+
 @router.delete("/footprints", response_model=DeleteSuccessResponse)
 def delete_user_footprints(
         footprint_data: FootprintRequest = Body(..., description="用户足迹"),
         db: Session = Depends(get_db)
 ):
     try:
-        #检验用户存在
         user_exist = db.query(DBUser).filter(DBUser.id == footprint_data.user_id).first()
         if not user_exist:
             raise HTTPException(status_code=404, detail=f"用户ID {footprint_data.user_id} 不存在")
 
-        #检验足迹存在
         exist_footprint = db.query(DBFootprint).filter(
             DBFootprint.user_id == footprint_data.user_id,
             DBFootprint.spot_id == footprint_data.spot_id
@@ -150,7 +91,6 @@ def delete_user_footprints(
         db.delete(exist_footprint)
         db.commit()
 
-        # 清除缓存
         clear_footprint_cache()
         return {"status": "ok", "detail": "足迹删除成功"}
     except HTTPException:
@@ -159,3 +99,174 @@ def delete_user_footprints(
         db.rollback()
         print(f"足迹删除失败{str(e)}")
         raise HTTPException(status_code=500, detail=f"用户足迹删除失败{str(e)}")
+
+
+@router.post("/favorites", response_model=FavoriteItem, summary="添加收藏")
+def add_favorite(
+        req: FavoriteRequest = Body(...),
+        db: Session = Depends(get_db)
+):
+    try:
+        user = db.query(DBUser).filter(DBUser.id == req.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+
+        all_spots = get_all_spots_from_db()
+        if req.spot_id not in all_spots:
+            raise HTTPException(status_code=404, detail="景点不存在")
+
+        existing = db.query(DBFavorite).filter(
+            DBFavorite.user_id == req.user_id,
+            DBFavorite.spot_id == req.spot_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="已收藏该景点")
+
+        fav = DBFavorite(user_id=req.user_id, spot_id=req.spot_id)
+        db.add(fav)
+        db.commit()
+        db.refresh(fav)
+        return FavoriteItem.model_validate(fav)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"收藏失败：{str(e)}")
+
+
+@router.get("/favorites", response_model=FavoriteListResponse, summary="获取收藏列表")
+def get_favorites(
+        user_id: int = Query(..., ge=1, description="用户ID"),
+        db: Session = Depends(get_db)
+):
+    try:
+        favs = db.query(DBFavorite).filter(
+            DBFavorite.user_id == user_id
+        ).order_by(DBFavorite.created_at.desc()).all()
+        items = [FavoriteItem.model_validate(f) for f in favs]
+        return FavoriteListResponse(user_id=user_id, count=len(items), favorites=items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取收藏失败：{str(e)}")
+
+
+@router.delete("/favorites", response_model=DeleteSuccessResponse, summary="取消收藏")
+def delete_favorite(
+        req: FavoriteRequest = Body(...),
+        db: Session = Depends(get_db)
+):
+    try:
+        existing = db.query(DBFavorite).filter(
+            DBFavorite.user_id == req.user_id,
+            DBFavorite.spot_id == req.spot_id,
+        ).first()
+        if not existing:
+            raise HTTPException(status_code=404, detail="未收藏该景点")
+        db.delete(existing)
+        db.commit()
+        return {"status": "ok", "detail": "取消收藏成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"取消收藏失败：{str(e)}")
+
+
+@router.get("/notifications", response_model=NotificationListResponse, summary="获取通知列表")
+def get_notifications(
+        user_id: int = Query(..., ge=1, description="用户ID"),
+        db: Session = Depends(get_db)
+):
+    try:
+        notifs = db.query(DBNotification).filter(
+            DBNotification.user_id == user_id
+        ).order_by(DBNotification.created_at.desc()).all()
+        items = [NotificationItem.model_validate(n) for n in notifs]
+        return NotificationListResponse(count=len(items), notifications=items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取通知失败：{str(e)}")
+
+
+@router.put("/notifications/{notification_id}/read", summary="标记通知已读")
+def mark_notification_read(
+        notification_id: int,
+        db: Session = Depends(get_db)
+):
+    try:
+        notif = db.query(DBNotification).filter(DBNotification.id == notification_id).first()
+        if not notif:
+            raise HTTPException(status_code=404, detail="通知不存在")
+        notif.is_read = True
+        db.commit()
+        return {"status": "ok", "detail": "已标记为已读"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"标记已读失败：{str(e)}")
+
+
+@router.put("/notifications/read-all", summary="全部标记已读")
+def mark_all_notifications_read(
+        user_id: int = Query(..., ge=1, description="用户ID"),
+        db: Session = Depends(get_db)
+):
+    try:
+        db.query(DBNotification).filter(
+            DBNotification.user_id == user_id,
+            DBNotification.is_read == False,
+        ).update({"is_read": True})
+        db.commit()
+        return {"status": "ok", "detail": "全部标记已读"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"标记全部已读失败：{str(e)}")
+
+
+@router.get("/{user_id}", response_model=UserInfoResponse, summary="获取用户信息")
+def get_user_info(
+        user_id: int,
+        db: Session = Depends(get_db)
+):
+    try:
+        user = db.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        return UserInfoResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            role=user.role,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取用户信息失败：{str(e)}")
+
+
+@router.put("/{user_id}", response_model=UserInfoResponse, summary="修改用户信息")
+def update_user_info(
+        user_id: int,
+        update_data: UserUpdateRequest = Body(...),
+        db: Session = Depends(get_db)
+):
+    try:
+        user = db.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if update_data.email is not None:
+            user.email = update_data.email
+        if update_data.password is not None:
+            user.password = get_password_hash(update_data.password)
+        db.commit()
+        db.refresh(user)
+        return UserInfoResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            role=user.role,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"修改用户信息失败：{str(e)}")

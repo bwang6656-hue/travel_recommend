@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.database import get_db
-from app.schemas.schemas import RecommendationResponse, RecommendationItem, SpotDetail, CityRecommendationResponse, CityRecommendationItem, AITripRequest, AITripResponse, NaturalLanguageTripRequest, NaturalLanguageTripResponse, RelatedSpotItem
+from app.schemas.schemas import RecommendationResponse, RecommendationItem, SpotDetail, CityRecommendationResponse, CityRecommendationItem, AITripRequest, AITripResponse, NaturalLanguageTripRequest, NaturalLanguageTripResponse, ChatRequest, ChatReplyResponse, RelatedSpotItem
 from app.services.neo4j_service import get_all_spots_from_db, get_user_footprints_from_mysql, recommend_by_footprint, recommend_by_lightgcn, extract_field, driver
 from app.services.amap_service import get_city_weather
 from app.services.ai_service import ai_trip_generator
@@ -287,12 +287,17 @@ async def generate_ai_itinerary(
     except Exception as ext:
         raise HTTPException(status_code=500, detail=f"生成行程失败：{str(ext)[:50]}")
 
-@router.post("/ai/chat", response_model=NaturalLanguageTripResponse, summary="RAG智能行程规划（自然语言输入）")
-async def generate_nl_itinerary(
-        request: NaturalLanguageTripRequest = Body(..., description="自然语言行程需求")
+@router.post("/ai/chat", response_model=ChatReplyResponse, summary="RAG智能对话（支持多轮）")
+async def ai_chat(
+        request: ChatRequest = Body(..., description="对话请求")
 ):
     try:
-        result = rag_service.plan_itinerary(request.query)
+        history_dicts = [{"role": h.role, "content": h.content} for h in request.history] if request.history else []
+        result = rag_service.chat(
+            message=request.message,
+            history=history_dicts,
+            system_prompt=request.system_prompt,
+        )
         related = [
             RelatedSpotItem(
                 spot_id=spot["spot_id"],
@@ -306,16 +311,14 @@ async def generate_nl_itinerary(
             )
             for spot in result.get("related_spots", [])
         ]
-        return NaturalLanguageTripResponse(
-            query=result["query"],
-            itinerary=result["itinerary"],
+        return ChatReplyResponse(
+            reply=result["reply"],
             related_spots=related,
-            days=result["days"],
             city=result.get("city"),
             preference=result.get("preference"),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"行程规划失败：{str(e)[:100]}")
+        raise HTTPException(status_code=500, detail=f"对话失败：{str(e)[:100]}")
 
 # 基于LightGCN的推荐
 @router.get("/lightgcn", response_model=RecommendationResponse)

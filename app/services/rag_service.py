@@ -274,6 +274,58 @@ class RAGService:
 
         return "\n".join(lines)
 
+    def chat(self, message: str, history: List[Dict] = None, system_prompt: str = "") -> Dict[str, Any]:
+        print(f"[RAG] 收到对话消息: {message}")
+
+        intent = self.extract_intent(message)
+        print(f"[RAG] 提取意图: {intent}")
+
+        spots = self.retrieve_spots(intent, message)
+        print(f"[RAG] 检索到 {len(spots)} 个相关景点")
+
+        context = self._format_context(spots, intent)
+
+        messages = []
+        sys_content = system_prompt if system_prompt else ITINERARY_SYSTEM_PROMPT
+        messages.append({"role": "system", "content": sys_content})
+
+        if history:
+            for h in history:
+                role = h.get("role", "user")
+                content = h.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+
+        user_content = f"用户需求：{message}\n\n{context}\n\n请根据以上景点信息，为用户规划旅游行程或回答问题。"
+        messages.append({"role": "user", "content": user_content})
+
+        reply = self._call_llm(messages, temperature=0.7, max_tokens=2000)
+
+        if not reply:
+            print("[RAG] LLM不可用，使用模板生成")
+            reply = self._generate_fallback_itinerary(spots, intent)
+
+        related_spots = []
+        for spot in spots[:10]:
+            meta = spot["metadata"]
+            related_spots.append({
+                "spot_id": meta.get("spot_id"),
+                "name": meta.get("name"),
+                "city": meta.get("city"),
+                "rating": meta.get("rating"),
+                "price": meta.get("price"),
+                "best_season": meta.get("best_season"),
+                "recommended_duration": meta.get("recommended_duration"),
+                "tags": meta.get("tags", []),
+            })
+
+        return {
+            "reply": reply,
+            "related_spots": related_spots,
+            "city": intent.get("city"),
+            "preference": intent.get("preference"),
+        }
+
     def plan_itinerary(self, query: str) -> Dict[str, Any]:
         print(f"[RAG] 收到查询: {query}")
 
