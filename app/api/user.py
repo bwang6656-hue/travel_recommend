@@ -6,6 +6,8 @@ from app.schemas.schemas import (
     UserInfoResponse, UserUpdateRequest, FootprintRequest, FootprintResponse,
     FootprintListResponse, DeleteSuccessResponse, FavoriteRequest, FavoriteItem,
     FavoriteListResponse, NotificationItem, NotificationListResponse,
+    AnnouncementItem, AnnouncementListResponse,
+    UserNotificationItem, UserNotificationListResponse,
 )
 from app.services.auth_service import get_password_hash
 from app.services.neo4j_service import get_all_spots_from_db, clear_footprint_cache
@@ -122,7 +124,12 @@ def add_favorite(
         if existing:
             raise HTTPException(status_code=400, detail="已收藏该景点")
 
-        fav = DBFavorite(user_id=req.user_id, spot_id=req.spot_id)
+        fav = DBFavorite(
+            user_id=req.user_id,
+            username=user.username,
+            spot_id=req.spot_id,
+            spotname=all_spots[req.spot_id].get("name", ""),
+        )
         db.add(fav)
         db.commit()
         db.refresh(fav)
@@ -171,33 +178,71 @@ def delete_favorite(
         raise HTTPException(status_code=500, detail=f"取消收藏失败：{str(e)}")
 
 
-@router.get("/notifications", response_model=NotificationListResponse, summary="获取通知列表")
-def get_notifications(
-        user_id: int = Query(..., ge=1, description="用户ID"),
+@router.get("/notifications", response_model=UserNotificationListResponse, summary="获取用户通知列表")
+def get_user_notifications(
+        user_id: int = Query(..., description="用户ID"),
         db: Session = Depends(get_db)
 ):
     try:
-        notifs = db.query(DBNotification).filter(
-            DBNotification.user_id == user_id
+        announcements = db.query(DBNotification).filter(
+            DBNotification.user_id == 0,
+            DBNotification.type.in_(["系统通知", "活动公告", "维护通知", "版本更新"])
         ).order_by(DBNotification.created_at.desc()).all()
-        items = [NotificationItem.model_validate(n) for n in notifs]
-        return NotificationListResponse(count=len(items), notifications=items)
+
+        items = []
+        for ann in announcements:
+            read_record = db.query(DBNotification).filter(
+                DBNotification.user_id == user_id,
+                DBNotification.title == ann.title,
+                DBNotification.content == ann.content,
+                DBNotification.is_read == True
+            ).first()
+            items.append(UserNotificationItem(
+                id=ann.id,
+                title=ann.title,
+                content=ann.content,
+                type=ann.type,
+                is_read=read_record is not None,
+                created_at=ann.created_at
+            ))
+        return UserNotificationListResponse(count=len(items), notifications=items)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取通知失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取通知列表失败：{str(e)}")
 
 
-@router.put("/notifications/{notification_id}/read", summary="标记通知已读")
+@router.put("/notifications/{announcement_id}/read", summary="标记单条已读")
 def mark_notification_read(
-        notification_id: int,
+        announcement_id: int,
+        user_id: int = Query(..., description="用户ID"),
         db: Session = Depends(get_db)
 ):
     try:
-        notif = db.query(DBNotification).filter(DBNotification.id == notification_id).first()
-        if not notif:
-            raise HTTPException(status_code=404, detail="通知不存在")
-        notif.is_read = True
-        db.commit()
-        return {"status": "ok", "detail": "已标记为已读"}
+        ann = db.query(DBNotification).filter(
+            DBNotification.id == announcement_id,
+            DBNotification.user_id == 0
+        ).first()
+        if not ann:
+            raise HTTPException(status_code=404, detail="公告不存在")
+
+        existing = db.query(DBNotification).filter(
+            DBNotification.user_id == user_id,
+            DBNotification.title == ann.title,
+            DBNotification.content == ann.content,
+            DBNotification.is_read == True
+        ).first()
+        if not existing:
+            read_record = DBNotification(
+                user_id=user_id,
+                title=ann.title,
+                content=ann.content,
+                type=ann.type,
+                is_read=True,
+                read_count=0,
+            )
+            db.add(read_record)
+            ann.read_count = (ann.read_count or 0) + 1
+            db.commit()
+        return {"status": "ok"}
     except HTTPException:
         raise
     except Exception as e:
@@ -207,19 +252,74 @@ def mark_notification_read(
 
 @router.put("/notifications/read-all", summary="全部标记已读")
 def mark_all_notifications_read(
-        user_id: int = Query(..., ge=1, description="用户ID"),
+        user_id: int = Query(..., description="用户ID"),
         db: Session = Depends(get_db)
 ):
     try:
-        db.query(DBNotification).filter(
-            DBNotification.user_id == user_id,
-            DBNotification.is_read == False,
-        ).update({"is_read": True})
+        announcements = db.query(DBNotification).filter(
+            DBNotification.user_id == 0,
+            DBNotification.type.in_(["系统通知", "活动公告", "维护通知", "版本更新"])
+        ).all()
+
+        for ann in announcements:
+            existing = db.query(DBNotification).filter(
+                DBNotification.user_id == user_id,
+                DBNotification.title == ann.title,
+                DBNotification.content == ann.content,
+                DBNotification.is_read == True
+            ).first()
+            if not existing:
+                read_record = DBNotification(
+                    user_id=user_id,
+                    title=ann.title,
+                    content=ann.content,
+                    type=ann.type,
+                    is_read=True,
+                    read_count=0,
+                )
+                db.add(read_record)
+                ann.read_count = (ann.read_count or 0) + 1
         db.commit()
-        return {"status": "ok", "detail": "全部标记已读"}
+        return {"status": "ok"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"标记全部已读失败：{str(e)}")
+
+
+@router.get("/announcements", response_model=AnnouncementListResponse, summary="查询公告列表")
+def get_announcements(db: Session = Depends(get_db)):
+    try:
+        announcements = db.query(DBNotification).filter(
+            DBNotification.user_id == 0,
+        ).filter(
+            DBNotification.type.in_(["系统通知", "活动公告", "维护通知", "版本更新"])
+        ).order_by(DBNotification.created_at.desc()).all()
+        items = [AnnouncementItem.model_validate(a) for a in announcements]
+        return AnnouncementListResponse(count=len(items), announcements=items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询公告失败：{str(e)}")
+
+
+@router.put("/announcements/{announcement_id}/read", summary="标记公告已读")
+def mark_announcement_read(
+        announcement_id: int,
+        db: Session = Depends(get_db)
+):
+    try:
+        announcement = db.query(DBNotification).filter(
+            DBNotification.id == announcement_id,
+            DBNotification.user_id == 0,
+        ).first()
+        if not announcement:
+            raise HTTPException(status_code=404, detail="公告不存在")
+        announcement.read_count = (announcement.read_count or 0) + 1
+        db.commit()
+        return {"status": "ok", "detail": "已标记为已读", "read_count": announcement.read_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"标记已读失败：{str(e)}")
 
 
 @router.get("/{user_id}", response_model=UserInfoResponse, summary="获取用户信息")
@@ -236,6 +336,9 @@ def get_user_info(
             username=user.username,
             email=user.email,
             role=user.role,
+            birthday=user.birthday,
+            gender=user.gender,
+            avatar=user.avatar,
         )
     except HTTPException:
         raise
@@ -257,6 +360,14 @@ def update_user_info(
             user.email = update_data.email
         if update_data.password is not None:
             user.password = get_password_hash(update_data.password)
+        if update_data.birthday is not None:
+            user.birthday = update_data.birthday
+        if update_data.gender is not None:
+            if update_data.gender not in ("男", "女", "保密"):
+                raise HTTPException(status_code=400, detail="性别只能是'男'、'女'或'保密'")
+            user.gender = update_data.gender
+        if update_data.avatar is not None:
+            user.avatar = update_data.avatar
         db.commit()
         db.refresh(user)
         return UserInfoResponse(
@@ -264,6 +375,9 @@ def update_user_info(
             username=user.username,
             email=user.email,
             role=user.role,
+            birthday=user.birthday,
+            gender=user.gender,
+            avatar=user.avatar,
         )
     except HTTPException:
         raise

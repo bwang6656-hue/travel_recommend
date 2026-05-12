@@ -56,6 +56,7 @@ app.include_router(api_router)
 # 添加景点详情接口的重定向，兼容旧路由
 from fastapi.responses import RedirectResponse
 @app.get("/spot/{spot_name}")
+
 async def redirect_spot_detail(spot_name: str):
     return RedirectResponse(url=f"/recommend/spot/{spot_name}")
 

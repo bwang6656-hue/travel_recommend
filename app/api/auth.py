@@ -25,7 +25,6 @@ def user_register(
             password=hashed_password,
             email=user_data.email,
             role=role,
-            status="active",
         )
 
         db.add(new_user)
@@ -37,6 +36,9 @@ def user_register(
             username=new_user.username,
             email=new_user.email,
             role=new_user.role,
+            birthday=new_user.birthday,
+            gender=new_user.gender,
+            avatar=new_user.avatar,
         )
     except HTTPException:
         raise
@@ -59,9 +61,6 @@ def user_login(
         if not verify_password(login_data.password, user.password):
             raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-        if user.status == "disabled":
-            raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
-
         if login_data.role and login_data.role != user.role:
             raise HTTPException(status_code=403, detail=f"该账号不是{login_data.role}身份")
 
@@ -70,6 +69,9 @@ def user_login(
             username=user.username,
             email=user.email,
             role=user.role,
+            birthday=user.birthday,
+            gender=user.gender,
+            avatar=user.avatar,
         )
     except HTTPException:
         raise

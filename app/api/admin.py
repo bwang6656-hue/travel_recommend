@@ -3,11 +3,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from datetime import datetime, timedelta
 from app.models.database import get_db
-from app.models.models import DBUser, DBFootprint, DBFavorite
+from app.models.models import DBUser, DBFootprint, DBFavorite, DBFeedback, DBNotification
 from app.schemas.schemas import (
     AdminDashboardStats, AdminTrendItem, AdminTrendResponse,
     AdminUserItem, AdminUserListResponse, AdminRoleUpdateRequest,
-    AdminStatusUpdateRequest,
+    FeedbackListResponse, FeedbackResponse,
+    AnnouncementCreateRequest, AnnouncementItem, AnnouncementListResponse,
 )
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
@@ -68,15 +69,12 @@ def get_dashboard_trends(
 @router.get("/users", response_model=AdminUserListResponse, summary="用户列表")
 def get_user_list(
         role: str = Query(None, description="按角色筛选：user/admin"),
-        status: str = Query(None, description="按状态筛选：active/disabled"),
         db: Session = Depends(get_db)
 ):
     try:
         query = db.query(DBUser)
         if role:
             query = query.filter(DBUser.role == role)
-        if status:
-            query = query.filter(DBUser.status == status)
         users = query.order_by(DBUser.id).all()
         items = [
             AdminUserItem(
@@ -84,7 +82,9 @@ def get_user_list(
                 username=u.username,
                 email=u.email,
                 role=u.role or "user",
-                status=u.status or "active",
+                birthday=u.birthday,
+                gender=u.gender,
+                avatar=u.avatar,
             )
             for u in users
         ]
@@ -116,23 +116,83 @@ def update_user_role(
         raise HTTPException(status_code=500, detail=f"修改角色失败：{str(e)}")
 
 
-@router.put("/users/{user_id}/status", summary="修改用户状态")
-def update_user_status(
-        user_id: int,
-        req: AdminStatusUpdateRequest = Body(...),
+@router.get("/feedbacks", response_model=FeedbackListResponse, summary="获取反馈列表")
+def get_feedback_list(
+        type: str = Query(None, description="按类型筛选：suggestion/complaint/bug/other"),
         db: Session = Depends(get_db)
 ):
     try:
-        user = db.query(DBUser).filter(DBUser.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="用户不存在")
-        if req.status not in ("active", "disabled"):
-            raise HTTPException(status_code=400, detail="状态只能为 active 或 disabled")
-        user.status = req.status
+        query = db.query(DBFeedback)
+        if type:
+            query = query.filter(DBFeedback.type == type)
+        feedbacks = query.order_by(DBFeedback.create_time.desc()).all()
+        items = [FeedbackResponse.model_validate(f) for f in feedbacks]
+        return FeedbackListResponse(count=len(items), feedbacks=items)
+    except Exception as e:
+        print(f"获取反馈列表失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取反馈列表失败：{str(e)}")
+
+
+@router.post("/announcements", response_model=AnnouncementItem, summary="发布公告")
+def create_announcement(
+        req: AnnouncementCreateRequest = Body(...),
+        db: Session = Depends(get_db)
+):
+    try:
+        valid_types = ("系统通知", "活动公告", "维护通知", "版本更新")
+        ann_type = req.type if req.type in valid_types else "系统通知"
+
+        announcement = DBNotification(
+            user_id=0,
+            title=req.title,
+            content=req.content,
+            type=ann_type,
+            is_read=False,
+            read_count=0,
+        )
+        db.add(announcement)
         db.commit()
-        return {"status": "ok", "detail": f"用户 {user.username} 状态已修改为 {req.status}"}
+        db.refresh(announcement)
+        return AnnouncementItem.model_validate(announcement)
+    except Exception as e:
+        db.rollback()
+        print(f"发布公告失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"发布公告失败：{str(e)}")
+
+
+@router.get("/announcements", response_model=AnnouncementListResponse, summary="查询公告列表")
+def get_announcement_list(db: Session = Depends(get_db)):
+    try:
+        announcements = db.query(DBNotification).filter(
+            DBNotification.user_id == 0,
+        ).filter(
+            DBNotification.type.in_(["系统通知", "活动公告", "维护通知", "版本更新"])
+        ).order_by(DBNotification.created_at.desc()).all()
+        items = [AnnouncementItem.model_validate(a) for a in announcements]
+        return AnnouncementListResponse(count=len(items), announcements=items)
+    except Exception as e:
+        print(f"查询公告失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"查询公告失败：{str(e)}")
+
+
+@router.delete("/announcements/{announcement_id}", summary="删除公告")
+def delete_announcement(
+        announcement_id: int,
+        db: Session = Depends(get_db)
+):
+    try:
+        announcement = db.query(DBNotification).filter(
+            DBNotification.id == announcement_id,
+            DBNotification.user_id == 0,
+        ).first()
+        if not announcement:
+            raise HTTPException(status_code=404, detail="公告不存在")
+        db.delete(announcement)
+        db.commit()
+        return {"status": "ok", "detail": "公告删除成功"}
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"修改状态失败：{str(e)}")
+        print(f"删除公告失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除公告失败：{str(e)}")

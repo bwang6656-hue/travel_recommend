@@ -1,5 +1,5 @@
-from sqlalchemy import Column, Integer, String, DECIMAL, Float, DateTime, Boolean, Text
-from datetime import datetime
+from sqlalchemy import Column, Integer, String, DECIMAL, Float, DateTime, Boolean, Text, Date
+from datetime import datetime, date
 from app.models.database import Base
 
 
@@ -10,7 +10,9 @@ class DBUser(Base):
     email = Column(String(255), nullable=True)
     password = Column(String(255), nullable=False)
     role = Column(String(50), default="user", nullable=False)
-    status = Column(String(50), default="active", nullable=False)
+    birthday = Column(Date, nullable=True)
+    gender = Column(String(10), default="保密", nullable=False)
+    avatar = Column(String(500), nullable=True)
 
 
 class DBHotel(Base):
@@ -45,18 +47,21 @@ class DBFavorite(Base):
     __tablename__ = "user_favorites"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)
+    username = Column(String(255), nullable=True)
     spot_id = Column(Integer, nullable=False)
+    spotname = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
 
 class DBNotification(Base):
-    __tablename__ = "user_notifications"
+    __tablename__ = "notifications"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
     type = Column(String(50), default="system")
     is_read = Column(Boolean, default=False)
+    read_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
 
 
@@ -64,9 +69,10 @@ class DBFeedback(Base):
     __tablename__ = "user_feedback"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, nullable=True)
+    username = Column(String(255), nullable=True)
     content = Column(Text, nullable=False)
-    contact = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    type = Column(String(50), default="suggestion")
+    create_time = Column(DateTime, default=datetime.now)
 
 
 class DBChatHistory(Base):

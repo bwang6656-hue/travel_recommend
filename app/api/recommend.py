@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.database import get_db
-from app.schemas.schemas import RecommendationResponse, RecommendationItem, SpotDetail, CityRecommendationResponse, CityRecommendationItem, AITripRequest, AITripResponse, NaturalLanguageTripRequest, NaturalLanguageTripResponse, ChatRequest, ChatReplyResponse, RelatedSpotItem
+from app.schemas.schemas import RecommendationResponse, RecommendationItem, SpotDetail, CityRecommendationResponse, CityRecommendationItem, AITripRequest, AITripResponse, NaturalLanguageTripRequest, NaturalLanguageTripResponse, ChatRequest, ChatReplyResponse, RelatedSpotItem, SpotListItem, SpotListResponse
 from app.services.neo4j_service import get_all_spots_from_db, get_user_footprints_from_mysql, recommend_by_footprint, recommend_by_lightgcn, extract_field, driver
 from app.services.amap_service import get_city_weather
 from app.services.ai_service import ai_trip_generator
@@ -10,6 +10,39 @@ from app.services.explanation_service import explanation_generator
 from app.services.hybrid_recommender import hybrid_recommender
 
 router = APIRouter(prefix="/recommend", tags=["推荐"])
+
+
+@router.get("/spots", response_model=SpotListResponse, summary="景点列表查询（支持筛选）")
+def get_spot_list(
+        city: str = Query(None, description="按城市筛选"),
+        keyword: str = Query(None, description="按名称关键词筛选"),
+        page: int = Query(1, ge=1, description="页码"),
+        page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+):
+    try:
+        all_spots = get_all_spots_from_db()
+        spots = []
+        for spot_id, info in all_spots.items():
+            if city and info.get("city", "") != city:
+                continue
+            if keyword and keyword not in info.get("name", ""):
+                continue
+            spots.append(SpotListItem(
+                spot_id=spot_id,
+                name=info.get("name", ""),
+                city=info.get("city", ""),
+                rating=info.get("rating", 0.0),
+                address=info.get("address", ""),
+                types=info.get("types", ""),
+            ))
+        spots.sort(key=lambda x: x.rating, reverse=True)
+        total = len(spots)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = spots[start:end]
+        return SpotListResponse(count=total, spots=paged)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"景点列表查询失败：{str(e)}")
 
 # 根据景点推荐
 @router.get("", response_model=RecommendationResponse)
@@ -99,13 +132,19 @@ async def get_spot_detail(spot_name: str):  # Path(..., description="景点名�
 
     # 组装并返回详情
     spot_info = all_spots[target_spot_id]
+    weather = None
+    try:
+        weather = get_city_weather(spot_info["city"])
+    except Exception:
+        pass
     return SpotDetail(
         spot_id=target_spot_id,
         name=spot_info["name"],
         city=spot_info["city"],
         rating=spot_info["rating"],
         address=spot_info["address"],
-        types=spot_info["types"]
+        types=spot_info["types"],
+        weather=weather
     )
 
 # 根据城市推荐
@@ -151,7 +190,7 @@ async def get_city_recommendations(
 # 默认推荐
 @router.get("/default", response_model=RecommendationResponse)
 async def get_default_recommendations(
-        limit: int = Query(10, ge=1, le=50, description="返回数量（1-50）"),
+        limit: int = Query(100, ge=1, le=5000, description="返回数量（1-50）"),
 ):
     all_spots = get_all_spots_from_db()
     default_spot_id = None
